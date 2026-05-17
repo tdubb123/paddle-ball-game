@@ -18,9 +18,30 @@
             overflow: hidden;
         }
         h1 { margin-bottom: 5px; color: #00adb5; }
-        #setup { text-align: center; background: #222831; padding: 30px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
-        input { padding: 10px; font-size: 1rem; border: none; border-radius: 4px; margin-right: 10px; width: 200px; background: #fff; }
-        button { padding: 10px 20px; font-size: 1rem; background-color: #00adb5; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #setup {
+            text-align: center;
+            background: #222831;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+        input {
+            padding: 10px;
+            font-size: 1rem;
+            border: none;
+            border-radius: 4px;
+            margin-right: 10px;
+            background: #fff;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 1rem;
+            background-color: #00adb5;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
         button:hover { background-color: #007c82; }
         #game-room { display: none; text-align: center; }
         #status { font-size: 1.2rem; margin-bottom: 10px; min-height: 25px; color: #eeeeee; }
@@ -30,226 +51,279 @@
 </head>
 <body>
 
-    <!-- Matchmaking Screen -->
+    <h1>Paddle Strike Real-Time</h1>
+
     <div id="setup">
         <h2>Enter Room Name</h2>
         <input type="text" id="room-input" placeholder="e.g., pong-room-xyz">
+        
+        <div style="margin: 15px 0;">
+            <label for="speed-input" style="color: #fff; margin-right: 10px;">Match Speed:</label>
+            <select id="speed-input" style="padding: 8px; border-radius: 4px; border: none; background: #fff; font-size: 1rem;">
+                <option value="3">Slow (Casual)</option>
+                <option value="5" selected>Normal (Standard)</option>
+                <option value="8">Fast (Challenging)</option>
+                <option value="12">Insane (Reflex Test)</option>
+            </select>
+        </div>
+
         <button onclick="joinRoom()">Join Match</button>
     </div>
 
-    <!-- Arena Screen -->
     <div id="game-room">
         <div id="status">Connecting...</div>
         <canvas id="gameCanvas" width="800" height="400"></canvas>
         <div id="share-link"></div>
     </div>
 
-    <!-- Firebase Realtime Database Scripts -->
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
-        // Publicly usable test Firebase instance
-        const firebaseConfig = { databaseURL: "https://paddle-game-9a486-default-rtdb.firebaseio.com/" };
+        // Your Verified Private Firebase Configuration Instance
+        const firebaseConfig = { 
+            databaseURL: "https://paddle-game-9a486-default-rtdb.firebaseio.com/" 
+        };
         firebase.initializeApp(firebaseConfig);
         const database = firebase.database();
 
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
 
+        // Web Audio API Retro Arcade Sound Effects Synthesizer
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            const now = audioCtx.currentTime;
+
+            if (type === 'hit') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(150, now);
+                osc.frequency.exponentialRampToValueAtTime(300, now + 0.1);
+                gainNode.gain.setValueAtTime(0.3, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+                osc.start(now); osc.stop(now + 0.1);
+            } else if (type === 'wall') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(180, now);
+                gainNode.gain.setValueAtTime(0.2, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+                osc.start(now); osc.stop(now + 0.08);
+            } else if (type === 'score') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(400, now);
+                osc.frequency.setValueAtTime(600, now + 0.08);
+                gainNode.gain.setValueAtTime(0.2, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
+                osc.start(now); osc.stop(now + 0.25);
+            }
+        }
+
         let roomRef;
-        let role = ""; // "host" (Left Paddle) or "client" (Right Paddle)
+        let role = ""; // "host" or "client"
         let roomName = "";
         let gameInterval;
 
-        // Constants
+        // Core Layout Geometries
         const PADDLE_WIDTH = 12;
         const PADDLE_HEIGHT = 80;
         const BALL_SIZE = 10;
+        const SPEED_MULTIPLIER = 1.05; // 5% speed acceleration on paddle strikes
 
-        // Shared Game State
+        // Internal Host Engine Trackers
+        let ballX, ballY, ballDX, ballDY;
+
+        // Multi-client Global State Tree
         let state = {
-            p1Y: 160,     // Host paddle
-            p2Y: 160,     // Client paddle
+            p1Y: 160,
+            p2Y: 160,
             ballX: 400,
             ballY: 200,
-            ballDX: 4,
-            ballDY: 4,
+            ballDX: 5,
+            ballDY: 5,
             p1Score: 0,
             p2Score: 0,
-            active: false
+            active: false,
+            baseSpeed: 5
         };
 
-        // Track local mouse position
+        // Capture local input vectors
         let localMouseY = 160;
         window.addEventListener('mousemove', (e) => {
             const rect = canvas.getBoundingClientRect();
             localMouseY = e.clientY - rect.top - PADDLE_HEIGHT / 2;
-            // Bound inside canvas
             if (localMouseY < 0) localMouseY = 0;
             if (localMouseY > canvas.height - PADDLE_HEIGHT) localMouseY = canvas.height - PADDLE_HEIGHT;
         });
 
+        // Parse explicit link parameters if passed
         if (window.location.hash) {
             document.getElementById('room-input').value = window.location.hash.substring(1);
         }
 
         function joinRoom() {
-            roomName = document.getElementById('room-input').value.trim().toLowerCase();
-            if (!roomName) return alert("Please type a room name.");
-
+            const roomInput = document.getElementById("room-input").value.trim();
+            const selectedSpeed = parseInt(document.getElementById("speed-input").value) || 5;
+            
+            if (!roomInput) return;
+            roomName = roomInput;
             window.location.hash = roomName;
-            document.getElementById('setup').style.display = 'none';
-            document.getElementById('game-room').style.display = 'block';
+            roomRef = database.ref("rooms/" + roomName);
 
-            roomRef = database.ref('pong_rooms/' + roomName);
-
-            roomRef.once('value', (snapshot) => {
-                const data = snapshot.val();
-                if (!data) {
+            roomRef.once("value", (snapshot) => {
+                if (!snapshot.exists()) {
                     role = "host";
-                    roomRef.set({
-                        state: state,
-                        hostConnected: true,
-                        clientConnected: false
-                    });
-                } else if (!data.clientConnected) {
-                    role = "client";
-                    roomRef.update({ clientConnected: true });
+                    state = {
+                        p1Y: 160,
+                        p2Y: 160,
+                        ballX: 400,
+                        ballY: 200,
+                        ballDX: selectedSpeed,
+                        ballDY: selectedSpeed,
+                        p1Score: 0,
+                        p2Score: 0,
+                        active: false,
+                        baseSpeed: selectedSpeed
+                    };
+                    
+                    ballX = state.ballX;
+                    ballY = state.ballY;
+                    ballDX = state.ballDX;
+                    ballDY = state.ballDY;
+
+                    roomRef.set(state);
                 } else {
-                    alert("Room full! Choose another room name.");
-                    window.location.reload();
-                    return;
+                    role = "client";
+                    roomRef.child("active").set(true);
                 }
+
+                document.getElementById("setup").style.display = "none";
+                document.getElementById("game-room").style.display = "block";
+                document.getElementById("share-link").innerText = "Match Link: " + window.location.href;
+                
                 initGame();
             });
         }
 
         function initGame() {
-            document.getElementById('share-link').innerHTML = `Opponent Link: <b>${window.location.href}</b>`;
-
-            // Clean up network state if window closes
-            if (role === "host") {
-                roomRef.child("hostConnected").onDisconnect().set(false);
-                roomRef.child("state/active").onDisconnect().set(false);
-            } else {
-                roomRef.child("clientConnected").onDisconnect().set(false);
-            }
-
-            // Sync structural loop from DB changes
-            roomRef.on('value', (snapshot) => {
+            // Read remote state synchronization updates
+            roomRef.on("value", (snapshot) => {
                 const data = snapshot.val();
                 if (!data) return;
+                state = data;
 
-                // Sync data down
-                if (role === "client") {
-                    state = data.state;
+                if (!state.active) {
+                    document.getElementById("status").innerText = "Waiting for Player 2 to click the match link...";
                 } else {
-                    // Host only pulls the client's paddle position
-                    state.p2Y = data.state.p2Y;
-                }
-
-                const statusDiv = document.getElementById("status");
-                if (!data.clientConnected) {
-                    statusDiv.innerText = "Waiting for Player 2...";
-                    state.active = false;
-                } else if (!data.hostConnected) {
-                    statusDiv.innerText = "Host disconnected.";
-                    state.active = false;
-                } else {
-                    statusDiv.innerText = `Score: ${state.p1Score} - ${state.p2Score}`;
-                    if (!state.active && role === "host") {
-                        state.active = true;
-                    }
+                    document.getElementById("status").innerText = `Player 1 (Orange): ${state.p1Score}  |  Player 2 (Teal): ${state.p2Score}`;
                 }
             });
 
-            // Run the local execution loop (60 FPS)
-            gameInterval = setInterval(gameLoop, 1000 / 60);
+            // Local loop frequency definitions
+            gameInterval = setInterval(updateGame, 1000 / 60);
         }
 
-        function gameLoop() {
+        function resetBall(scoringPlayer) {
+            ballX = 400;
+            ballY = 200;
+            const currentBase = state.baseSpeed || 5;
+            ballDX = scoringPlayer === 1 ? -currentBase : currentBase;
+            ballDY = (Math.random() > 0.5 ? 1 : -1) * currentBase;
+        }
+
+        function updateGame() {
+            if (!state.active) {
+                draw();
+                return;
+            }
+
+            // Transmit local coordinate positions to the global state pipeline
             if (role === "host") {
-                state.p1Y = localMouseY; // Map host paddle to local mouse
-                if (state.active) {
-                    updatePhysics();
-                }
-                // Push everything to Firebase
-                roomRef.child("state").set(state);
-            } else {
-                // Client only transmits their local paddle data up
-                roomRef.child("state/p2Y").set(localMouseY);
+                roomRef.child("p1Y").set(localMouseY);
+            } else if (role === "client") {
+                roomRef.child("p2Y").set(localMouseY);
             }
 
-            renderArena();
+            // Run Physics Engine purely on the Host thread to avoid multi-instance execution conflicts
+            if (role === "host") {
+                ballX += ballDX;
+                ballY += ballDY;
+
+                // Vertical boundary canvas strikes
+                if (ballY <= 0 || ballY >= canvas.height - BALL_SIZE) {
+                    ballDY = -ballDY;
+                    playSound('wall');
+                }
+
+                // Player 1 Paddle Collision
+                if (ballX <= PADDLE_WIDTH && ballY >= state.p1Y && ballY <= state.p1Y + PADDLE_HEIGHT) {
+                    ballDX = -ballDX * SPEED_MULTIPLIER;
+                    ballDY = ballDY * SPEED_MULTIPLIER;
+                    playSound('hit');
+                }
+
+                // Player 2 Paddle Collision
+                if (ballX >= canvas.width - PADDLE_WIDTH - BALL_SIZE && ballY >= state.p2Y && ballY <= state.p2Y + PADDLE_HEIGHT) {
+                    ballDX = -ballDX * SPEED_MULTIPLIER;
+                    ballDY = ballDY * SPEED_MULTIPLIER;
+                    playSound('hit');
+                }
+
+                // Out of Bounds Logic (Scoring points)
+                if (ballX < 0) {
+                    state.p2Score++;
+                    playSound('score');
+                    resetBall(2);
+                    roomRef.update({ p2Score: state.p2Score });
+                } else if (ballX > canvas.width) {
+                    state.p1Score++;
+                    playSound('score');
+                    resetBall(1);
+                    roomRef.update({ p1Score: state.p1Score });
+                }
+
+                // Publish frame update metrics down to the realtime tree
+                roomRef.update({
+                    ballX: ballX,
+                    ballY: ballY,
+                    ballDX: ballDX,
+                    ballDY: ballDY
+                });
+            }
+
+            draw();
         }
 
-        function updatePhysics() {
-            // Ball movement
-            state.ballX += state.ballDX;
-            state.ballY += state.ballDY;
+        function draw() {
+            // Clear Frame Buffer
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // Ceiling / Floor bounces
-            if (state.ballY <= 0 || state.ballY >= canvas.height - BALL_SIZE) {
-                state.ballDY = -state.ballDY;
-            }
-
-            // Left Paddle Collision (Host)
-            if (state.ballX <= PADDLE_WIDTH) {
-                if (state.ballY + BALL_SIZE >= state.p1Y && state.ballY <= state.p1Y + PADDLE_HEIGHT) {
-                    state.ballDX = Math.abs(state.ballDX) + 0.3; // Speed up slightly
-                    state.ballX = PADDLE_WIDTH;
-                } else {
-                    state.p2Score++; // Client scores
-                    resetBall();
-                }
-            }
-
-            // Right Paddle Collision (Client)
-            if (state.ballX >= canvas.width - PADDLE_WIDTH - BALL_SIZE) {
-                if (state.ballY + BALL_SIZE >= state.p2Y && state.ballY <= state.p2Y + PADDLE_HEIGHT) {
-                    state.ballDX = -(Math.abs(state.ballDX) + 0.3);
-                    state.ballX = canvas.width - PADDLE_WIDTH - BALL_SIZE;
-                } else {
-                    state.p1Score++; // Host scores
-                    resetBall();
-                }
-            }
-        }
-
-        function resetBall() {
-            state.ballX = canvas.width / 2;
-            state.ballY = canvas.height / 2;
-            state.ballDX = state.ballDX > 0 ? -4 : 4;
-            state.ballDY = (Math.random() > 0.5 ? 4 : -4);
-        }
-
-        function renderArena() {
-            // Clear canvas
-            ctx.fillStyle = "#111";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-            // Draw center dashed line
-            ctx.strokeStyle = "#333";
+            // Draw Court Dividing Median Line
+            ctx.strokeStyle = "rgba(255,255,255,0.1)";
             ctx.lineWidth = 4;
-            ctx.setLineDash([15, 15]);
+            ctx.setLineDash([10, 10]);
             ctx.beginPath();
             ctx.moveTo(canvas.width / 2, 0);
             ctx.lineTo(canvas.width / 2, canvas.height);
             ctx.stroke();
-            ctx.setLineDash([]); // Reset line dash
+            ctx.setLineDash([]);
 
-            // Draw Paddle 1 (Left - Orange)
-            ctx.fillStyle = "#ff5722";
+            // Draw Player 1 Paddle (Orange - Left)
+            ctx.fillStyle = "#ff9f43";
             ctx.fillRect(0, state.p1Y, PADDLE_WIDTH, PADDLE_HEIGHT);
 
-            // Draw Paddle 2 (Right - Cyan)
+            // Draw Player 2 Paddle (Teal - Right)
             ctx.fillStyle = "#00adb5";
             ctx.fillRect(canvas.width - PADDLE_WIDTH, state.p2Y, PADDLE_WIDTH, PADDLE_HEIGHT);
 
-            // Draw Ball
+            // Draw Ball if match engine is fully active
             if (state.active) {
-                ctx.fillStyle = "#fff";
+                ctx.fillStyle = "#eeeeee";
                 ctx.fillRect(state.ballX, state.ballY, BALL_SIZE, BALL_SIZE);
             }
         }
