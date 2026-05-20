@@ -158,7 +158,6 @@
         };
 
         let localMouseY = canvas.height / 2 - PADDLE_HEIGHT / 2;
-        let lastPaddleWrite = 0;
 
         window.addEventListener('mousemove', (e) => {
             const rect = canvas.getBoundingClientRect();
@@ -201,8 +200,6 @@
             // preventing the race condition where two players both see no room and both become host.
             roomRef.transaction((current) => {
                 if (current === null) {
-                    // Room doesn't exist — create it as host
-                    role = "host";
                     return {
                         p1Y: canvas.height / 2 - PADDLE_HEIGHT / 2,
                         p2Y: canvas.height / 2 - PADDLE_HEIGHT / 2,
@@ -214,8 +211,6 @@
                         playerCount: 1, winner: 0
                     };
                 } else if (current.playerCount === 1) {
-                    // Room exists with only host — join as client
-                    role = "client";
                     return { ...current, playerCount: 2, active: true };
                 } else {
                     // Room is full — abort transaction by returning undefined
@@ -231,12 +226,14 @@
                     return;
                 }
 
+                // Assign role in the completion callback, not inside the transaction
+                // function, which Firebase may call multiple times speculatively.
+                const data = snapshot.val();
+                role = data.playerCount === 1 ? "host" : "client";
+
                 if (role === "host") {
-                    const data = snapshot.val();
                     ballX = data.ballX; ballY = data.ballY;
                     ballDX = data.ballDX; ballDY = data.ballDY;
-
-                    // Clean up this room from Firebase when the host disconnects
                     roomRef.onDisconnect().remove();
                 }
 
@@ -258,6 +255,7 @@
                     const winnerLabel = state.winner === 1 ? "Player 1 (Orange)" : "Player 2 (Teal)";
                     document.getElementById("status").innerText = `${winnerLabel} wins the match! Refresh to play again.`;
                     clearInterval(gameInterval);
+                    roomRef.off();
                     draw();
                     return;
                 }
