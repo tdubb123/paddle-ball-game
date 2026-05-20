@@ -88,6 +88,19 @@
         firebase.initializeApp(firebaseConfig);
         const database = firebase.database();
 
+        // Auto-cleanup of stale rooms on page load. Rooms with no createdAt
+        // predate this fix and are also treated as stale.
+        const ROOM_TTL_MS = 30 * 60 * 1000;
+        database.ref("rooms").once("value", (snapshot) => {
+            const now = Date.now();
+            snapshot.forEach((roomSnap) => {
+                const data = roomSnap.val();
+                if (!data || !data.createdAt || (now - data.createdAt) > ROOM_TTL_MS) {
+                    roomSnap.ref.remove();
+                }
+            });
+        });
+
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
 
@@ -199,7 +212,8 @@
                         ballDY: (Math.random() > 0.5 ? 1 : -1) * selectedSpeed,
                         p1Score: 0, p2Score: 0,
                         active: false, baseSpeed: selectedSpeed,
-                        playerCount: 1
+                        playerCount: 1,
+                        createdAt: firebase.database.ServerValue.TIMESTAMP
                     };
                 } else if (current.playerCount === 1) {
                     return { ...current, playerCount: 2, active: true };
