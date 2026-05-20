@@ -114,7 +114,7 @@
                     }
                 });
             });
-        });
+        }).catch(() => {});
 
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
@@ -194,7 +194,7 @@
                         document.getElementById("setup-header").innerText = "Match Invite Found!";
                     }
                 });
-            });
+            }).catch(() => {});
         }
 
         function showError(msg) {
