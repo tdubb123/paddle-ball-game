@@ -47,6 +47,7 @@
         #status { font-size: 1.2rem; margin-bottom: 10px; min-height: 25px; color: #eeeeee; }
         canvas { background: #111; border: 4px solid #393e46; border-radius: 4px; display: block; margin: 0 auto; }
         #share-link { background: #393e46; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 0.9rem; margin-top: 10px; word-break: break-all; }
+        #error-msg { color: #ff6b6b; font-size: 0.9rem; margin-top: 8px; min-height: 20px; }
     </style>
 </head>
 <body>
@@ -56,7 +57,8 @@
     <div id="setup">
         <h2 id="setup-header">Enter Room Name</h2>
         <input type="text" id="room-input" placeholder="e.g., pong-room-xyz">
-        
+        <div id="error-msg"></div>
+
         <div id="speed-container" style="margin: 15px 0;">
             <label for="speed-input" style="color: #fff; margin-right: 10px;">Match Speed:</label>
             <select id="speed-input" style="padding: 8px; border-radius: 4px; border: none; background: #fff; font-size: 1rem;">
@@ -80,9 +82,8 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
-        // Your Verified Private Firebase Configuration Instance
-        const firebaseConfig = { 
-            databaseURL: "https://paddle-game-9a486-default-rtdb.firebaseio.com/" 
+        const firebaseConfig = {
+            databaseURL: "https://paddle-game-9a486-default-rtdb.firebaseio.com/"
         };
         firebase.initializeApp(firebaseConfig);
         const database = firebase.database();
@@ -90,11 +91,9 @@
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
 
-        // Web Audio API Retro Arcade Sound Effects Synthesizer
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         function playSound(type) {
             if (audioCtx.state === 'suspended') audioCtx.resume();
-            
             const osc = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
             osc.connect(gainNode);
@@ -121,51 +120,54 @@
                 gainNode.gain.setValueAtTime(0.2, now);
                 gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
                 osc.start(now); osc.stop(now + 0.25);
+            } else if (type === 'win') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(523, now);
+                osc.frequency.setValueAtTime(659, now + 0.1);
+                osc.frequency.setValueAtTime(784, now + 0.2);
+                gainNode.gain.setValueAtTime(0.3, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+                osc.start(now); osc.stop(now + 0.5);
             }
         }
 
         let roomRef;
-        let role = ""; // "host" or "client"
+        let role = "";
         let roomName = "";
         let gameInterval;
 
-        // Core Layout Geometries
         const PADDLE_WIDTH = 12;
         const PADDLE_HEIGHT = 80;
         const BALL_SIZE = 10;
-        const SPEED_MULTIPLIER = 1.05; // 5% speed acceleration on paddle strikes
+        const SPEED_MULTIPLIER = 1.05;
+        const MAX_BALL_SPEED = 25;   // cap to prevent tunneling at extreme speeds
+        const WIN_SCORE = 7;
+        const PADDLE_WRITE_INTERVAL = 50; // ms — throttle paddle writes to Firebase
 
-        // Internal Host Engine Trackers
         let ballX, ballY, ballDX, ballDY;
+        // Cooldown flag prevents double-bounce when ball lingers inside paddle zone
+        let collisionCooldown = 0;
 
-        // Multi-client Global State Tree
         let state = {
-            p1Y: 160,
-            p2Y: 160,
-            ballX: 400,
-            ballY: 200,
-            ballDX: 5,
-            ballDY: 5,
-            p1Score: 0,
-            p2Score: 0,
-            active: false,
-            baseSpeed: 5
+            p1Y: 160, p2Y: 160,
+            ballX: 400, ballY: 200,
+            ballDX: 5, ballDY: 5,
+            p1Score: 0, p2Score: 0,
+            active: false, baseSpeed: 5,
+            playerCount: 1, winner: 0
         };
 
-        // Capture local input vectors
-        let localMouseY = 160;
+        let localMouseY = canvas.height / 2 - PADDLE_HEIGHT / 2;
+
         window.addEventListener('mousemove', (e) => {
             const rect = canvas.getBoundingClientRect();
             localMouseY = e.clientY - rect.top - PADDLE_HEIGHT / 2;
-            if (localMouseY < 0) localMouseY = 0;
-            if (localMouseY > canvas.height - PADDLE_HEIGHT) localMouseY = canvas.height - PADDLE_HEIGHT;
+            localMouseY = Math.max(0, Math.min(canvas.height - PADDLE_HEIGHT, localMouseY));
         });
 
-        // AUTO-DETECT INVITE LINK: Hide speed menu if room already exists
         if (window.location.hash) {
             const roomNameFromHash = window.location.hash.substring(1);
             document.getElementById('room-input').value = roomNameFromHash;
-            
             database.ref("rooms/" + roomNameFromHash).once("value", (snapshot) => {
                 if (snapshot.exists()) {
                     document.getElementById("speed-container").style.display = "none";
@@ -174,146 +176,215 @@
             });
         }
 
+        function showError(msg) {
+            document.getElementById("error-msg").innerText = msg;
+        }
+
         function joinRoom() {
             const roomInput = document.getElementById("room-input").value.trim();
             const selectedSpeed = parseInt(document.getElementById("speed-input").value) || 5;
-            
-            if (!roomInput) return;
+
+            // Sanitize room name — Firebase paths disallow . # $ [ ]
+            if (!roomInput) { showError("Please enter a room name."); return; }
+            if (!/^[a-zA-Z0-9_-]+$/.test(roomInput)) {
+                showError("Room name may only contain letters, numbers, hyphens, and underscores.");
+                return;
+            }
+
+            showError("");
             roomName = roomInput;
             window.location.hash = roomName;
             roomRef = database.ref("rooms/" + roomName);
 
-            roomRef.once("value", (snapshot) => {
-                if (!snapshot.exists()) {
-                    // Room doesn't exist: Player 1 sets the baseline rules
-                    role = "host";
-                    state = {
-                        p1Y: 160,
-                        p2Y: 160,
-                        ballX: 400,
-                        ballY: 200,
-                        ballDX: selectedSpeed,
-                        ballDY: selectedSpeed,
-                        p1Score: 0,
-                        p2Score: 0,
-                        active: false,
-                        baseSpeed: selectedSpeed
+            // Use a transaction to atomically claim host or join as client,
+            // preventing the race condition where two players both see no room and both become host.
+            roomRef.transaction((current) => {
+                if (current === null) {
+                    return {
+                        p1Y: canvas.height / 2 - PADDLE_HEIGHT / 2,
+                        p2Y: canvas.height / 2 - PADDLE_HEIGHT / 2,
+                        ballX: 400, ballY: 200,
+                        ballDX: (Math.random() > 0.5 ? 1 : -1) * selectedSpeed,
+                        ballDY: (Math.random() > 0.5 ? 1 : -1) * selectedSpeed,
+                        p1Score: 0, p2Score: 0,
+                        active: false, baseSpeed: selectedSpeed,
+                        playerCount: 1, winner: 0
                     };
-                    
-                    ballX = state.ballX;
-                    ballY = state.ballY;
-                    ballDX = state.ballDX;
-                    ballDY = state.ballDY;
-
-                    roomRef.set(state);
+                } else if (current.playerCount === 1) {
+                    return { ...current, playerCount: 2, active: true };
                 } else {
-                    // Room exists: Player 2 joins client-side
-                    role = "client";
-                    roomRef.child("active").set(true);
+                    // Room is full — abort transaction by returning undefined
+                    return undefined;
+                }
+            }, (error, committed, snapshot) => {
+                if (error) {
+                    showError("Connection error. Please try again.");
+                    return;
+                }
+                if (!committed) {
+                    showError("Room is full. Please choose a different room name.");
+                    return;
+                }
+
+                // Assign role in the completion callback, not inside the transaction
+                // function, which Firebase may call multiple times speculatively.
+                const data = snapshot.val();
+                role = data.playerCount === 1 ? "host" : "client";
+
+                if (role === "host") {
+                    ballX = data.ballX; ballY = data.ballY;
+                    ballDX = data.ballDX; ballDY = data.ballDY;
+                    roomRef.onDisconnect().remove();
                 }
 
                 document.getElementById("setup").style.display = "none";
                 document.getElementById("game-room").style.display = "block";
                 document.getElementById("share-link").innerText = "Match Link: " + window.location.href;
-                
+
                 initGame();
             });
         }
 
         function initGame() {
-            // Read remote state synchronization updates
             roomRef.on("value", (snapshot) => {
                 const data = snapshot.val();
                 if (!data) return;
                 state = data;
 
+                if (state.winner > 0) {
+                    const winnerLabel = state.winner === 1 ? "Player 1 (Orange)" : "Player 2 (Teal)";
+                    document.getElementById("status").innerText = `${winnerLabel} wins the match! Refresh to play again.`;
+                    clearInterval(gameInterval);
+                    roomRef.off();
+                    draw();
+                    return;
+                }
+
                 if (!state.active) {
                     document.getElementById("status").innerText = "Waiting for Player 2 to click the match link...";
                 } else {
-                    document.getElementById("status").innerText = `Player 1 (Orange): ${state.p1Score}  |  Player 2 (Teal): ${state.p2Score}`;
+                    document.getElementById("status").innerText =
+                        `Player 1 (Orange): ${state.p1Score}  |  Player 2 (Teal): ${state.p2Score}  —  First to ${WIN_SCORE}`;
                 }
             });
 
-            // Local loop frequency definitions
             gameInterval = setInterval(updateGame, 1000 / 60);
         }
 
         function resetBall(scoringPlayer) {
             ballX = 400;
             ballY = 200;
-            const currentBase = state.baseSpeed || 5;
-            ballDX = scoringPlayer === 1 ? -currentBase : currentBase;
-            ballDY = (Math.random() > 0.5 ? 1 : -1) * currentBase;
+            collisionCooldown = 0;
+            const base = state.baseSpeed || 5;
+            // Serve toward the player who just conceded
+            ballDX = scoringPlayer === 1 ? -base : base;
+            ballDY = (Math.random() > 0.5 ? 1 : -1) * base;
         }
 
+        function clampSpeed(dx, dy) {
+            const speed = Math.sqrt(dx * dx + dy * dy);
+            if (speed > MAX_BALL_SPEED) {
+                const scale = MAX_BALL_SPEED / speed;
+                return [dx * scale, dy * scale];
+            }
+            return [dx, dy];
+        }
+
+        let lastPaddleSendTime = 0;
+
         function updateGame() {
-            if (!state.active) {
+            if (!state.active || state.winner > 0) {
                 draw();
                 return;
             }
 
-            // Transmit local coordinate positions to the global state pipeline
-            if (role === "host") {
-                roomRef.child("p1Y").set(localMouseY);
-            } else if (role === "client") {
-                roomRef.child("p2Y").set(localMouseY);
+            // Throttle paddle position writes to avoid Firebase write storm
+            const now = Date.now();
+            if (now - lastPaddleSendTime > PADDLE_WRITE_INTERVAL) {
+                lastPaddleSendTime = now;
+                if (role === "host") {
+                    roomRef.child("p1Y").set(localMouseY);
+                } else if (role === "client") {
+                    roomRef.child("p2Y").set(localMouseY);
+                }
             }
 
-            // Run Physics Engine purely on the Host thread to avoid multi-instance execution conflicts
-            if (role === "host") {
-                ballX += ballDX;
-                ballY += ballDY;
+            if (role !== "host") { draw(); return; }
 
-                // Vertical boundary canvas strikes
-                if (ballY <= 0 || ballY >= canvas.height - BALL_SIZE) {
-                    ballDY = -ballDY;
-                    playSound('wall');
-                }
+            if (collisionCooldown > 0) collisionCooldown--;
 
-                // Player 1 Paddle Collision
-                if (ballX <= PADDLE_WIDTH && ballY >= state.p1Y && ballY <= state.p1Y + PADDLE_HEIGHT) {
-                    ballDX = -ballDX * SPEED_MULTIPLIER;
-                    ballDY = ballDY * SPEED_MULTIPLIER;
-                    playSound('hit');
-                }
+            ballX += ballDX;
+            ballY += ballDY;
 
-                // Player 2 Paddle Collision
-                if (ballX >= canvas.width - PADDLE_WIDTH - BALL_SIZE && ballY >= state.p2Y && ballY <= state.p2Y + PADDLE_HEIGHT) {
-                    ballDX = -ballDX * SPEED_MULTIPLIER;
-                    ballDY = ballDY * SPEED_MULTIPLIER;
-                    playSound('hit');
-                }
-
-                // Out of Bounds Logic (Scoring points)
-                if (ballX < 0) {
-                    state.p2Score++;
-                    playSound('score');
-                    resetBall(2);
-                    roomRef.update({ p2Score: state.p2Score });
-                } else if (ballX > canvas.width) {
-                    state.p1Score++;
-                    playSound('score');
-                    resetBall(1);
-                    roomRef.update({ p1Score: state.p1Score });
-                }
-
-                // Publish frame update metrics down to the realtime tree
-                roomRef.update({
-                    ballX: ballX,
-                    ballY: ballY,
-                    ballDX: ballDX,
-                    ballDY: ballDY
-                });
+            // Top/bottom wall bounce
+            if (ballY <= 0) {
+                ballY = 0;
+                ballDY = Math.abs(ballDY);
+                playSound('wall');
+            } else if (ballY >= canvas.height - BALL_SIZE) {
+                ballY = canvas.height - BALL_SIZE;
+                ballDY = -Math.abs(ballDY);
+                playSound('wall');
             }
 
+            // P1 paddle collision — swept: ball leading edge crosses paddle right edge
+            const p1Right = PADDLE_WIDTH;
+            const ballBottom = ballY + BALL_SIZE;
+            if (collisionCooldown === 0 && ballDX < 0 &&
+                ballX <= p1Right && ballX >= 0 &&
+                ballBottom >= state.p1Y && ballY <= state.p1Y + PADDLE_HEIGHT) {
+                ballX = p1Right;
+                ballDX = Math.abs(ballDX) * SPEED_MULTIPLIER;
+                ballDY = ballDY * SPEED_MULTIPLIER;
+                [ballDX, ballDY] = clampSpeed(ballDX, ballDY);
+                collisionCooldown = 6;
+                playSound('hit');
+            }
+
+            // P2 paddle collision — swept: ball trailing edge crosses paddle left edge
+            const p2Left = canvas.width - PADDLE_WIDTH - BALL_SIZE;
+            if (collisionCooldown === 0 && ballDX > 0 &&
+                ballX >= p2Left && ballX <= canvas.width - PADDLE_WIDTH &&
+                ballBottom >= state.p2Y && ballY <= state.p2Y + PADDLE_HEIGHT) {
+                ballX = p2Left;
+                ballDX = -Math.abs(ballDX) * SPEED_MULTIPLIER;
+                ballDY = ballDY * SPEED_MULTIPLIER;
+                [ballDX, ballDY] = clampSpeed(ballDX, ballDY);
+                collisionCooldown = 6;
+                playSound('hit');
+            }
+
+            // Scoring
+            if (ballX < 0) {
+                state.p2Score++;
+                playSound('score');
+                if (state.p2Score >= WIN_SCORE) {
+                    playSound('win');
+                    roomRef.update({ p2Score: state.p2Score, winner: 2, active: false });
+                    return;
+                }
+                resetBall(2);
+                roomRef.update({ p2Score: state.p2Score });
+            } else if (ballX > canvas.width) {
+                state.p1Score++;
+                playSound('score');
+                if (state.p1Score >= WIN_SCORE) {
+                    playSound('win');
+                    roomRef.update({ p1Score: state.p1Score, winner: 1, active: false });
+                    return;
+                }
+                resetBall(1);
+                roomRef.update({ p1Score: state.p1Score });
+            }
+
+            roomRef.update({ ballX, ballY, ballDX, ballDY });
             draw();
         }
 
         function draw() {
-            // Clear Frame Buffer
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // Draw Court Dividing Median Line
+            // Center divider
             ctx.strokeStyle = "rgba(255,255,255,0.1)";
             ctx.lineWidth = 4;
             ctx.setLineDash([10, 10]);
@@ -323,18 +394,32 @@
             ctx.stroke();
             ctx.setLineDash([]);
 
-            // Draw Player 1 Paddle (Orange - Left)
+            // P1 paddle (Orange)
             ctx.fillStyle = "#ff9f43";
             ctx.fillRect(0, state.p1Y, PADDLE_WIDTH, PADDLE_HEIGHT);
 
-            // Draw Player 2 Paddle (Teal - Right)
+            // P2 paddle (Teal)
             ctx.fillStyle = "#00adb5";
             ctx.fillRect(canvas.width - PADDLE_WIDTH, state.p2Y, PADDLE_WIDTH, PADDLE_HEIGHT);
 
-            // Draw Ball if match engine is fully active
-            if (state.active) {
+            // Ball
+            if (state.active && state.winner === 0) {
                 ctx.fillStyle = "#eeeeee";
                 ctx.fillRect(state.ballX, state.ballY, BALL_SIZE, BALL_SIZE);
+            }
+
+            // Win overlay
+            if (state.winner > 0) {
+                ctx.fillStyle = "rgba(0,0,0,0.6)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = state.winner === 1 ? "#ff9f43" : "#00adb5";
+                ctx.font = "bold 48px 'Segoe UI', sans-serif";
+                ctx.textAlign = "center";
+                const label = state.winner === 1 ? "Player 1 Wins!" : "Player 2 Wins!";
+                ctx.fillText(label, canvas.width / 2, canvas.height / 2);
+                ctx.fillStyle = "#eeeeee";
+                ctx.font = "20px 'Segoe UI', sans-serif";
+                ctx.fillText("Refresh to play again", canvas.width / 2, canvas.height / 2 + 40);
             }
         }
     </script>
