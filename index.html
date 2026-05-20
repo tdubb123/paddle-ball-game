@@ -96,6 +96,8 @@
             snapshot.forEach((roomSnap) => {
                 const data = roomSnap.val();
                 if (!data || !data.createdAt || (now - data.createdAt) > ROOM_TTL_MS) {
+                    // Don't reap a room with two active players mid-match
+                    if (data && data.active && data.playerCount >= 2) return;
                     roomSnap.ref.remove();
                 }
             });
