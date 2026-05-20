@@ -79,6 +79,7 @@
     </div>
 
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script>
@@ -87,21 +88,33 @@
         };
         firebase.initializeApp(firebaseConfig);
         const database = firebase.database();
+        const auth = firebase.auth();
+
+        // Sign in anonymously so security rules can require `auth != null` for writes.
+        // All database operations are gated on this promise.
+        const authReady = auth.signInAnonymously().catch((err) => {
+            console.error("Anonymous sign-in failed:", err);
+            document.getElementById("error-msg").innerText =
+                "Authentication failed. Please reload the page.";
+            throw err;
+        });
 
         // Auto-cleanup of stale rooms on page load. Rooms with no createdAt
         // predate this fix and are also treated as stale.
         const ROOM_TTL_MS = 30 * 60 * 1000;
-        database.ref("rooms").once("value", (snapshot) => {
-            const now = Date.now();
-            snapshot.forEach((roomSnap) => {
-                const data = roomSnap.val();
-                if (!data || !data.createdAt || (now - data.createdAt) > ROOM_TTL_MS) {
-                    // Don't reap a room with two active players mid-match
-                    if (data && data.active && data.playerCount >= 2) return;
-                    roomSnap.ref.remove();
-                }
+        authReady.then(() => {
+            database.ref("rooms").once("value", (snapshot) => {
+                const now = Date.now();
+                snapshot.forEach((roomSnap) => {
+                    const data = roomSnap.val();
+                    if (!data || !data.createdAt || (now - data.createdAt) > ROOM_TTL_MS) {
+                        // Don't reap a room with two active players mid-match
+                        if (data && data.active && data.playerCount >= 2) return;
+                        roomSnap.ref.remove();
+                    }
+                });
             });
-        });
+        }).catch(() => {});
 
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
@@ -174,12 +187,14 @@
         if (window.location.hash) {
             const roomNameFromHash = window.location.hash.substring(1);
             document.getElementById('room-input').value = roomNameFromHash;
-            database.ref("rooms/" + roomNameFromHash).once("value", (snapshot) => {
-                if (snapshot.exists()) {
-                    document.getElementById("speed-container").style.display = "none";
-                    document.getElementById("setup-header").innerText = "Match Invite Found!";
-                }
-            });
+            authReady.then(() => {
+                database.ref("rooms/" + roomNameFromHash).once("value", (snapshot) => {
+                    if (snapshot.exists()) {
+                        document.getElementById("speed-container").style.display = "none";
+                        document.getElementById("setup-header").innerText = "Match Invite Found!";
+                    }
+                });
+            }).catch(() => {});
         }
 
         function showError(msg) {
@@ -200,8 +215,16 @@
             showError("");
             roomName = roomInput;
             window.location.hash = roomName;
-            roomRef = database.ref("rooms/" + roomName);
 
+            authReady.then(() => {
+                roomRef = database.ref("rooms/" + roomName);
+                startJoinTransaction(selectedSpeed);
+            }).catch(() => {
+                showError("Authentication failed. Please reload the page.");
+            });
+        }
+
+        function startJoinTransaction(selectedSpeed) {
             // Use a transaction to atomically claim host or join as client,
             // preventing the race condition where two players both see no room and both become host.
             roomRef.transaction((current) => {
