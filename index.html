@@ -361,6 +361,7 @@
                 if (state.p2Score >= WIN_SCORE) {
                     playSound('win');
                     roomRef.update({ p2Score: state.p2Score, winner: 2, active: false });
+                    setTimeout(() => roomRef.remove(), 5000);
                     return;
                 }
                 resetBall(2);
@@ -371,6 +372,7 @@
                 if (state.p1Score >= WIN_SCORE) {
                     playSound('win');
                     roomRef.update({ p1Score: state.p1Score, winner: 1, active: false });
+                    setTimeout(() => roomRef.remove(), 5000);
                     return;
                 }
                 resetBall(1);
