@@ -69,6 +69,17 @@
             </select>
         </div>
 
+        <div id="winscore-container" style="margin: 15px 0;">
+            <label for="winscore-input" style="color: #fff; margin-right: 10px;">First to:</label>
+            <select id="winscore-input" style="padding: 8px; border-radius: 4px; border: none; background: #fff; font-size: 1rem;">
+                <option value="3">3 points</option>
+                <option value="5">5 points</option>
+                <option value="7" selected>7 points</option>
+                <option value="11">11 points</option>
+                <option value="21">21 points</option>
+            </select>
+        </div>
+
         <button onclick="joinRoom()">Join Match</button>
     </div>
 
@@ -141,7 +152,6 @@
         const BALL_SIZE = 10;
         const SPEED_MULTIPLIER = 1.05;
         const MAX_BALL_SPEED = 25;   // cap to prevent tunneling at extreme speeds
-        const WIN_SCORE = 7;
         const PADDLE_WRITE_INTERVAL = 50; // ms — throttle paddle writes to Firebase
 
         let ballX, ballY, ballDX, ballDY;
@@ -171,6 +181,7 @@
             database.ref("rooms/" + roomNameFromHash).once("value", (snapshot) => {
                 if (snapshot.exists()) {
                     document.getElementById("speed-container").style.display = "none";
+                    document.getElementById("winscore-container").style.display = "none";
                     document.getElementById("setup-header").innerText = "Match Invite Found!";
                 }
             });
@@ -183,6 +194,7 @@
         function joinRoom() {
             const roomInput = document.getElementById("room-input").value.trim();
             const selectedSpeed = parseInt(document.getElementById("speed-input").value) || 5;
+            const selectedWinScore = parseInt(document.getElementById("winscore-input").value) || 7;
 
             // Sanitize room name — Firebase paths disallow . # $ [ ]
             if (!roomInput) { showError("Please enter a room name."); return; }
@@ -208,7 +220,7 @@
                         ballDY: (Math.random() > 0.5 ? 1 : -1) * selectedSpeed,
                         p1Score: 0, p2Score: 0,
                         active: false, baseSpeed: selectedSpeed,
-                        playerCount: 1, winner: 0
+                        playerCount: 1, winner: 0, winScore: selectedWinScore
                     };
                 } else if (current.playerCount === 1) {
                     return { ...current, playerCount: 2, active: true };
@@ -264,7 +276,7 @@
                     document.getElementById("status").innerText = "Waiting for Player 2 to click the match link...";
                 } else {
                     document.getElementById("status").innerText =
-                        `Player 1 (Orange): ${state.p1Score}  |  Player 2 (Teal): ${state.p2Score}  —  First to ${WIN_SCORE}`;
+                        `Player 1 (Orange): ${state.p1Score}  |  Player 2 (Teal): ${state.p2Score}  —  First to ${state.winScore}`;
                 }
             });
 
@@ -358,7 +370,7 @@
             if (ballX < 0) {
                 state.p2Score++;
                 playSound('score');
-                if (state.p2Score >= WIN_SCORE) {
+                if (state.p2Score >= state.winScore) {
                     playSound('win');
                     roomRef.update({ p2Score: state.p2Score, winner: 2, active: false });
                     setTimeout(() => roomRef.remove(), 5000);
@@ -369,7 +381,7 @@
             } else if (ballX > canvas.width) {
                 state.p1Score++;
                 playSound('score');
-                if (state.p1Score >= WIN_SCORE) {
+                if (state.p1Score >= state.winScore) {
                     playSound('win');
                     roomRef.update({ p1Score: state.p1Score, winner: 1, active: false });
                     setTimeout(() => roomRef.remove(), 5000);
