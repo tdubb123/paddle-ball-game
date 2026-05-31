@@ -1,0 +1,12 @@
+{
+  "name": "paddle-ball-game",
+  "version": "1.0.0",
+  "description": "Real-time multiplayer paddle ball game",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "serve": "^14.2.6"
+  }
+}
