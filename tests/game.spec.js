@@ -8,20 +8,20 @@ test.describe('Paddle Strike Real-Time', () => {
     await expect(page.locator('#setup')).toBeVisible();
     await expect(page.locator('#room-input')).toBeVisible();
     await expect(page.locator('#speed-input')).toBeVisible();
-    await expect(page.locator('button')).toContainText('Join Match');
+    await expect(page.locator('#join-btn')).toContainText('Join Match');
     await expect(page.locator('#game-room')).toBeHidden();
   });
 
   test('shows error for empty room name', async ({ page }) => {
     await page.goto('./');
-    await page.click('button');
+    await page.click('#join-btn');
     await expect(page.locator('#error-msg')).toHaveText('Please enter a room name.');
   });
 
   test('shows error for invalid room name characters', async ({ page }) => {
     await page.goto('./');
     await page.fill('#room-input', 'bad room!');
-    await page.click('button');
+    await page.click('#join-btn');
     await expect(page.locator('#error-msg')).toContainText('Room name may only contain');
   });
 
@@ -31,7 +31,7 @@ test.describe('Paddle Strike Real-Time', () => {
 
     const roomName = `test-room-${Date.now()}`;
     await page.fill('#room-input', roomName);
-    await page.click('button');
+    await page.click('#join-btn');
 
     await expect(page.locator('#game-room')).toBeVisible({ timeout: 8000 });
     await expect(page.locator('#setup')).toBeHidden();
@@ -51,11 +51,11 @@ test.describe('Paddle Strike Real-Time', () => {
     try {
       await p1.goto('./');
       await p1.fill('#room-input', roomName);
-      await p1.click('button');
+      await p1.click('#join-btn');
       await expect(p1.locator('#game-room')).toBeVisible({ timeout: 8000 });
 
       await p2.goto(`./#${roomName}`);
-      await p2.click('button');
+      await p2.click('#join-btn');
       await expect(p2.locator('#game-room')).toBeVisible({ timeout: 8000 });
 
       const scorePattern = /Player 1 \(Orange\):/;
@@ -75,15 +75,15 @@ test.describe('Paddle Strike Real-Time', () => {
     try {
       await p1.goto('./');
       await p1.fill('#room-input', roomName);
-      await p1.click('button');
+      await p1.click('#join-btn');
       await expect(p1.locator('#game-room')).toBeVisible({ timeout: 8000 });
 
       await p2.goto(`./#${roomName}`);
-      await p2.click('button');
+      await p2.click('#join-btn');
       await expect(p2.locator('#game-room')).toBeVisible({ timeout: 8000 });
 
       await p3.goto(`./#${roomName}`);
-      await p3.click('button');
+      await p3.click('#join-btn');
       await expect(p3.locator('#error-msg')).toContainText('Room is full', { timeout: 8000 });
     } finally {
       await p1.close();
