@@ -246,7 +246,7 @@
 
             if (!aiMode && roomRef) {
                 roomRef.off();
-                roomRef.remove();
+                if (role === "host") roomRef.remove();
                 roomRef = null;
             }
 
@@ -266,7 +266,6 @@
             aiMode = mode === 'ai';
             document.getElementById('multiplayer-section').style.display = aiMode ? 'none' : 'block';
             document.getElementById('ai-difficulty-container').style.display = aiMode ? 'block' : 'none';
-            document.getElementById('speed-container').style.display = 'block';
             document.getElementById('join-btn').innerText = aiMode ? 'Start Game' : 'Join Match';
             document.getElementById('setup-header').innerText = aiMode ? 'Play vs AI' : 'Enter Room Name';
             document.getElementById('btn-multiplayer').classList.toggle('active-mode', !aiMode);
@@ -291,15 +290,20 @@
             roomName = roomInput;
             window.location.hash = roomName;
 
+            const joinBtn = document.getElementById("join-btn");
+            joinBtn.disabled = true;
+
             authReady.then(() => {
                 roomRef = database.ref("rooms/" + roomName);
                 startJoinTransaction(selectedSpeed);
             }).catch(() => {
+                joinBtn.disabled = false;
                 showError("Authentication failed. Please reload the page.");
             });
         }
 
         function startAIGame() {
+            clearInterval(gameInterval);
             const selectedSpeed = parseInt(document.getElementById("speed-input").value) || 5;
             aiDifficulty = document.getElementById("ai-difficulty").value;
             role = "host";
@@ -362,10 +366,12 @@
                 }
             }, (error, committed, snapshot) => {
                 if (error) {
+                    document.getElementById("join-btn").disabled = false;
                     showError("Connection error. Please try again.");
                     return;
                 }
                 if (!committed) {
+                    document.getElementById("join-btn").disabled = false;
                     showError("Room is full. Please choose a different room name.");
                     return;
                 }
@@ -375,10 +381,10 @@
                 const data = snapshot.val();
                 role = data.playerCount === 1 ? "host" : "client";
 
+                roomRef.onDisconnect().remove();
                 if (role === "host") {
                     ballX = data.ballX; ballY = data.ballY;
                     ballDX = data.ballDX; ballDY = data.ballDY;
-                    roomRef.onDisconnect().remove();
                 }
 
                 document.getElementById("setup").style.display = "none";
@@ -390,6 +396,7 @@
         }
 
         function initGame() {
+            clearInterval(gameInterval);
             roomRef.on("value", (snapshot) => {
                 const data = snapshot.val();
                 if (!data) return;
