@@ -43,6 +43,16 @@
             cursor: pointer;
         }
         button:hover { background-color: #007c82; }
+        #mode-selector { margin-bottom: 18px; }
+        .mode-btn {
+            margin: 0 5px;
+            background-color: #393e46;
+        }
+        .mode-btn:hover { background-color: #4a5260; }
+        .mode-btn.active-mode {
+            background-color: #00adb5;
+        }
+        .mode-btn.active-mode:hover { background-color: #007c82; }
         #game-room { display: none; text-align: center; }
         #status { font-size: 1.2rem; margin-bottom: 10px; min-height: 25px; color: #eeeeee; }
         canvas { background: #111; border: 4px solid #393e46; border-radius: 4px; display: block; margin: 0 auto; }
@@ -55,8 +65,16 @@
     <h1>Paddle Strike Real-Time ⚡</h1>
 
     <div id="setup">
-        <h2 id="setup-header">Enter Room Name</h2>
-        <input type="text" id="room-input" placeholder="e.g., pong-room-xyz">
+        <h2 id="setup-header">Choose Mode</h2>
+
+        <div id="mode-selector">
+            <button id="btn-multiplayer" class="mode-btn active-mode" onclick="setMode('multi')">Multiplayer</button>
+            <button id="btn-ai" class="mode-btn" onclick="setMode('ai')">vs AI</button>
+        </div>
+
+        <div id="multiplayer-section">
+            <input type="text" id="room-input" placeholder="e.g., pong-room-xyz">
+        </div>
         <div id="error-msg"></div>
 
         <div id="speed-container" style="margin: 15px 0;">
@@ -69,7 +87,17 @@
             </select>
         </div>
 
-        <button onclick="joinRoom()">Join Match</button>
+        <div id="ai-difficulty-container" style="display: none; margin: 15px 0;">
+            <label for="ai-difficulty" style="color: #fff; margin-right: 10px;">AI Difficulty:</label>
+            <select id="ai-difficulty" style="padding: 8px; border-radius: 4px; border: none; background: #fff; font-size: 1rem;">
+                <option value="easy">Easy</option>
+                <option value="normal" selected>Normal</option>
+                <option value="hard">Hard</option>
+                <option value="impossible">Impossible</option>
+            </select>
+        </div>
+
+        <button id="join-btn" onclick="joinRoom()">Join Match</button>
     </div>
 
     <div id="game-room">
@@ -161,6 +189,10 @@
         let role = "";
         let roomName = "";
         let gameInterval;
+        let aiMode = false;
+        let aiDifficulty = 'normal';
+        // Max paddle pixels per frame at 60fps for each difficulty
+        const AI_SPEEDS = { easy: 2.5, normal: 4.5, hard: 7, impossible: 14 };
 
         const PADDLE_WIDTH = 12;
         const PADDLE_HEIGHT = 80;
@@ -207,7 +239,21 @@
             document.getElementById("error-msg").innerText = msg;
         }
 
+        function setMode(mode) {
+            aiMode = mode === 'ai';
+            document.getElementById('multiplayer-section').style.display = aiMode ? 'none' : 'block';
+            document.getElementById('ai-difficulty-container').style.display = aiMode ? 'block' : 'none';
+            document.getElementById('speed-container').style.display = 'block';
+            document.getElementById('join-btn').innerText = aiMode ? 'Start Game' : 'Join Match';
+            document.getElementById('setup-header').innerText = aiMode ? 'Play vs AI' : 'Enter Room Name';
+            document.getElementById('btn-multiplayer').classList.toggle('active-mode', !aiMode);
+            document.getElementById('btn-ai').classList.toggle('active-mode', aiMode);
+            showError('');
+        }
+
         function joinRoom() {
+            if (aiMode) { startAIGame(); return; }
+
             const roomInput = document.getElementById("room-input").value.trim();
             const selectedSpeed = parseInt(document.getElementById("speed-input").value) || 5;
 
@@ -228,6 +274,45 @@
             }).catch(() => {
                 showError("Authentication failed. Please reload the page.");
             });
+        }
+
+        function startAIGame() {
+            const selectedSpeed = parseInt(document.getElementById("speed-input").value) || 5;
+            aiDifficulty = document.getElementById("ai-difficulty").value;
+            role = "host";
+
+            ballX = 400; ballY = 200;
+            ballDX = (Math.random() > 0.5 ? 1 : -1) * selectedSpeed;
+            ballDY = (Math.random() > 0.5 ? 1 : -1) * selectedSpeed;
+            collisionCooldown = 0;
+
+            state = {
+                p1Y: canvas.height / 2 - PADDLE_HEIGHT / 2,
+                p2Y: canvas.height / 2 - PADDLE_HEIGHT / 2,
+                ballX, ballY, ballDX, ballDY,
+                p1Score: 0, p2Score: 0,
+                active: true, baseSpeed: selectedSpeed,
+                playerCount: 1
+            };
+
+            document.getElementById("setup").style.display = "none";
+            document.getElementById("game-room").style.display = "block";
+            document.getElementById("share-link").style.display = "none";
+            document.getElementById("status").innerText = "You (Orange): 0  |  AI (Teal): 0";
+
+            gameInterval = setInterval(updateGame, 1000 / 60);
+        }
+
+        function updateAIPaddle() {
+            const targetY = state.ballY - PADDLE_HEIGHT / 2 + BALL_SIZE / 2;
+            const speed = AI_SPEEDS[aiDifficulty];
+            const diff = targetY - state.p2Y;
+            if (Math.abs(diff) <= speed) {
+                state.p2Y = targetY;
+            } else {
+                state.p2Y += diff > 0 ? speed : -speed;
+            }
+            state.p2Y = Math.max(0, Math.min(canvas.height - PADDLE_HEIGHT, state.p2Y));
         }
 
         function startJoinTransaction(selectedSpeed) {
@@ -327,7 +412,7 @@
 
             // Throttle paddle position writes to avoid Firebase write storm
             const now = Date.now();
-            if (now - lastPaddleSendTime > PADDLE_WRITE_INTERVAL) {
+            if (!aiMode && now - lastPaddleSendTime > PADDLE_WRITE_INTERVAL) {
                 lastPaddleSendTime = now;
                 if (role === "host") {
                     roomRef.child("p1Y").set(localMouseY);
@@ -336,9 +421,14 @@
                 }
             }
 
+            // In AI mode, directly track local mouse for player paddle
+            if (aiMode) state.p1Y = localMouseY;
+
             if (role !== "host") { draw(); return; }
 
             if (collisionCooldown > 0) collisionCooldown--;
+
+            if (aiMode) updateAIPaddle();
 
             ballX += ballDX;
             ballY += ballDY;
@@ -386,15 +476,30 @@
                 state.p2Score++;
                 playSound('score');
                 resetBall(2);
-                roomRef.update({ p2Score: state.p2Score });
+                if (aiMode) {
+                    document.getElementById("status").innerText =
+                        `You (Orange): ${state.p1Score}  |  AI (Teal): ${state.p2Score}`;
+                } else {
+                    roomRef.update({ p2Score: state.p2Score });
+                }
             } else if (ballX > canvas.width) {
                 state.p1Score++;
                 playSound('score');
                 resetBall(1);
-                roomRef.update({ p1Score: state.p1Score });
+                if (aiMode) {
+                    document.getElementById("status").innerText =
+                        `You (Orange): ${state.p1Score}  |  AI (Teal): ${state.p2Score}`;
+                } else {
+                    roomRef.update({ p1Score: state.p1Score });
+                }
             }
 
-            roomRef.update({ ballX, ballY, ballDX, ballDY });
+            if (aiMode) {
+                state.ballX = ballX; state.ballY = ballY;
+                state.ballDX = ballDX; state.ballDY = ballDY;
+            } else {
+                roomRef.update({ ballX, ballY, ballDX, ballDY });
+            }
             draw();
         }
 
